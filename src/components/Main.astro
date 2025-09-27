@@ -1,0 +1,285 @@
+<canvas id='view'></canvas>
+
+<style>
+  #view {
+    position: fixed;
+    background: #111;
+    height: 100vh;
+    width: 100%;
+    top: 0;
+    left: 0;
+    visibility: hidden;
+  }
+</style>
+
+<script>
+  import { baseUrl } from '@/utils/functions';
+  const srcImage = baseUrl('/assets/stars.webp');
+  const TAU = Math.PI * 2;
+
+  // ---------------- PARTICLE ----------------
+  class Particle {
+    alive = false;
+    x = 0;
+    y = 0;
+    vx = 0;
+    vy = 0;
+    alpha = 1;
+    rotation = 0;
+    scale = 1;
+    theta = 0;
+    drag = 1;
+    wander = 0.5;
+    matrix = { a: 1, b: 0, c: 0, d: 1, tx: 0, ty: 0 };
+
+    width: number;
+    height: number;
+    originX: number;
+    originY: number;
+
+    constructor(
+      public texture: HTMLImageElement,
+      public frame: { x: number; y: number; width: number; height: number }
+    ) {
+      this.width = frame.width;
+      this.height = frame.height;
+      this.originX = frame.width / 2;
+      this.originY = frame.height / 2;
+    }
+
+    init(x = 0, y = 0) {
+      const angle = random(TAU);
+      const force = random(2, 6);
+      this.x = x;
+      this.y = y;
+      this.alpha = 1;
+      this.alive = true;
+      this.theta = angle;
+      this.vx = Math.sin(angle) * force;
+      this.vy = Math.cos(angle) * force;
+      this.rotation = Math.atan2(this.vy, this.vx);
+      this.drag = random(0.82, 0.97);
+      this.scale = random(0.1, 1);
+      this.wander = random(0.5, 1.0);
+      this.matrix = { a: 1, b: 0, c: 0, d: 1, tx: 0, ty: 0 };
+      return this;
+    }
+
+    update() {
+      const m = this.matrix;
+      this.x += this.vx;
+      this.y += this.vy;
+      this.vx *= this.drag;
+      this.vy *= this.drag;
+
+      this.theta += random(-0.5, 0.5) * this.wander;
+      this.vx += Math.sin(this.theta) * 0.1;
+      this.vy += Math.cos(this.theta) * 0.1;
+      this.rotation = Math.atan2(this.vy, this.vx);
+
+      this.alpha *= 0.98;
+      this.scale *= 0.985;
+      this.alive = this.scale > 0.06 && this.alpha > 0.06;
+
+      const cos = Math.cos(this.rotation) * this.scale;
+      const sin = Math.sin(this.rotation) * this.scale;
+      m.a = cos;
+      m.b = sin;
+      m.c = -sin;
+      m.d = cos;
+      m.tx = this.x - (this.originX * m.a + this.originY * m.c);
+      m.ty = this.y - (this.originX * m.b + this.originY * m.d);
+
+      return this;
+    }
+
+    draw(ctx: CanvasRenderingContext2D) {
+      const m = this.matrix;
+      const f = this.frame;
+      ctx.globalAlpha = this.alpha;
+      ctx.setTransform(m.a, m.b, m.c, m.d, m.tx, m.ty);
+      ctx.drawImage(
+        this.texture,
+        f.x,
+        f.y,
+        f.width,
+        f.height,
+        0,
+        0,
+        this.width,
+        this.height
+      );
+      return this;
+    }
+  }
+
+  // ---------------- APP ----------------
+  interface AppOptions {
+    view: HTMLCanvasElement;
+    texture: HTMLImageElement;
+    frames: { x: number; y: number; width: number; height: number }[];
+    maxParticles: number;
+    backgroundColor: string;
+    blendMode: GlobalCompositeOperation;
+    filterBlur: number;
+    filterContrast: number;
+    useBlurFilter: boolean;
+    useContrastFilter: boolean;
+  }
+
+  class App {
+    pool: Particle[] = [];
+    particles: Particle[] = [];
+    pointer = { x: -9999, y: -9999 };
+    buffer: HTMLCanvasElement = document.createElement('canvas');
+    bufferContext: CanvasRenderingContext2D;
+    supportsFilters: boolean;
+
+    width = 0;
+    height = 0;
+
+    constructor(public options: AppOptions) {
+      Object.assign(this, options);
+      this.bufferContext = this.buffer.getContext('2d')!;
+      this.supportsFilters = typeof this.bufferContext.filter !== 'undefined';
+      this.context = this.options.view.getContext('2d', { alpha: false })!;
+    }
+
+    context: CanvasRenderingContext2D;
+
+    pointerMove = (e: MouseEvent | TouchEvent) => {
+      e.preventDefault();
+      const pointer = 'touches' in e ? e.touches[0] : e;
+      this.pointer.x = pointer.clientX;
+      this.pointer.y = pointer.clientY;
+      for (let i = 0; i < random(2, 7); i++)
+        this.spawn(this.pointer.x, this.pointer.y);
+    };
+
+    resize = () => {
+      this.width =
+        this.buffer.width =
+        this.options.view.width =
+          window.innerWidth;
+      this.height =
+        this.buffer.height =
+        this.options.view.height =
+          window.innerHeight;
+    };
+
+    render = () => {
+      const ctx = this.context;
+      const buf = this.bufferContext;
+
+      ctx.fillStyle = this.options.backgroundColor;
+      ctx.fillRect(0, 0, this.width, this.height);
+
+      buf.globalAlpha = 1;
+      buf.setTransform(1, 0, 0, 1, 0, 0);
+      buf.clearRect(0, 0, this.width, this.height);
+      buf.globalCompositeOperation = this.options.blendMode;
+
+      for (let i = 0; i < this.particles.length; i++) {
+        const p = this.particles[i];
+        if (p.alive) p.update();
+        else {
+          this.pool.push(p);
+          removeItems(this.particles, i, 1);
+        }
+      }
+
+      for (const p of this.particles) p.draw(buf);
+
+      if (this.supportsFilters) {
+        if (this.options.useBlurFilter)
+          ctx.filter = `blur(${this.options.filterBlur}px)`;
+        ctx.drawImage(this.buffer, 0, 0);
+        if (this.options.useContrastFilter)
+          ctx.filter = `contrast(${this.options.filterContrast}%)`;
+      }
+      ctx.drawImage(this.buffer, 0, 0);
+      ctx.filter = 'none';
+
+      requestAnimationFrame(this.render);
+    };
+
+    spawn(x: number, y: number) {
+      let p: Particle;
+      if (this.particles.length > this.options.maxParticles)
+        p = this.particles.shift()!;
+      else if (this.pool.length) p = this.pool.pop()!;
+      else p = new Particle(this.options.texture, sample(this.options.frames));
+      p.init(x, y);
+      this.particles.push(p);
+      return this;
+    }
+
+    start() {
+      this.resize();
+      this.render();
+      this.options.view.style.visibility = 'visible';
+
+      if (window.PointerEvent)
+        window.addEventListener('pointermove', this.pointerMove);
+      else {
+        window.addEventListener('mousemove', this.pointerMove);
+        window.addEventListener('touchmove', this.pointerMove);
+      }
+
+      window.addEventListener('resize', this.resize);
+      requestAnimationFrame(this.render);
+      return this;
+    }
+  }
+
+  // ---------------- HELPERS ----------------
+  function createFrames(numFrames: number, width: number, height: number) {
+    const frames = [];
+    for (let i = 0; i < numFrames; i++)
+      frames.push({ x: width * i, y: 0, width, height });
+    return frames;
+  }
+
+  function removeItems<T>(array: T[], start: number, count: number) {
+    if (start >= array.length || count === 0) return;
+    count = start + count > array.length ? array.length - start : count;
+    for (let i = start; i < array.length - count; i++)
+      array[i] = array[i + count];
+    array.length -= count;
+  }
+
+  function random(min: number, max?: number) {
+    if (max == null) {
+      max = min;
+      min = 0;
+    }
+    if (min > max) [min, max] = [max, min];
+    return min + (max - min) * Math.random();
+  }
+
+  function sample<T>(array: T[]): T {
+    return array[(Math.random() * array.length) | 0];
+  }
+
+  // ---------------- INIT APP ----------------
+  window.addEventListener('load', () => {
+    const canvas = document.querySelector<HTMLCanvasElement>('#view')!;
+    const imgStars = new Image();
+    imgStars.src = srcImage;
+
+    const app = new App({
+      view: canvas,
+      texture: imgStars,
+      frames: createFrames(5, 80, 80),
+      maxParticles: 2000,
+      backgroundColor: '#111111',
+      blendMode: 'lighter',
+      filterBlur: 50,
+      filterContrast: 300,
+      useBlurFilter: true,
+      useContrastFilter: true
+    });
+
+    app.start();
+  });
+</script>
